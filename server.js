@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import express from "express";
 import ffmpegPath from "ffmpeg-static";
+import ffprobe from "ffprobe-static";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -27,6 +28,12 @@ if (!ffmpegPath) {
   throw new Error("ffmpeg-static could not find an ffmpeg binary");
 }
 
+const ffprobePath = ffprobe.path;
+
+if (!ffprobePath) {
+  throw new Error("ffprobe-static could not find an ffprobe binary");
+}
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 const app = express();
@@ -47,11 +54,34 @@ async function downloadFile(url, targetPath) {
   await fs.writeFile(targetPath, Buffer.from(arrayBuffer));
 }
 
+async function getVideoDuration(videoPath) {
+  const args = [
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    videoPath,
+  ];
+
+  const { stdout } = await execFileAsync(ffprobePath, args);
+  const duration = stdout.trim();
+
+  if (!duration) {
+    throw new Error("Could not determine video duration");
+  }
+
+  return duration;
+}
+
 async function mergeVideoAndAudio({
   videoPath,
   audioPath,
   outputPath,
 }) {
+  const videoDuration = await getVideoDuration(videoPath);
+
   const args = [
     "-y",
     "-i",
@@ -66,7 +96,10 @@ async function mergeVideoAndAudio({
     "copy",
     "-c:a",
     "aac",
-    "-shortest",
+    "-movflags",
+    "+faststart",
+    "-t",
+    videoDuration,
     outputPath,
   ];
 
