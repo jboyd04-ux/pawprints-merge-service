@@ -1,4 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
+import dotenv from "dotenv";
+import "dotenv/config";
 import express from "express";
 import ffmpegPath from "ffmpeg-static";
 import ffprobe from "ffprobe-static";
@@ -7,6 +9,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+dotenv.config();
 
 const execFileAsync = promisify(execFile);
 
@@ -54,7 +57,7 @@ async function downloadFile(url, targetPath) {
   await fs.writeFile(targetPath, Buffer.from(arrayBuffer));
 }
 
-async function getVideoDuration(videoPath) {
+async function getMediaDuration(mediaPath) {
   const args = [
     "-v",
     "error",
@@ -62,14 +65,14 @@ async function getVideoDuration(videoPath) {
     "format=duration",
     "-of",
     "default=noprint_wrappers=1:nokey=1",
-    videoPath,
+    mediaPath,
   ];
 
   const { stdout } = await execFileAsync(ffprobePath, args);
-  const duration = stdout.trim();
+  const duration = Number(stdout.trim());
 
-  if (!duration) {
-    throw new Error("Could not determine video duration");
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error(`Could not determine media duration for ${mediaPath}`);
   }
 
   return duration;
@@ -80,7 +83,13 @@ async function mergeVideoAndAudio({
   audioPath,
   outputPath,
 }) {
-  const videoDuration = await getVideoDuration(videoPath);
+  const videoDuration = await getMediaDuration(videoPath);
+  const audioDuration = await getMediaDuration(audioPath);
+
+  console.log("[merge] durations", {
+    videoDuration,
+    audioDuration,
+  });
 
   const args = [
     "-y",
@@ -93,21 +102,40 @@ async function mergeVideoAndAudio({
     "-map",
     "1:a:0",
     "-c:v",
-    "copy",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-pix_fmt",
+    "yuv420p",
     "-c:a",
     "aac",
+    "-b:a",
+    "192k",
+    "-af",
+    `apad=whole_dur=${videoDuration}`,
+    "-t",
+    String(videoDuration),
     "-movflags",
     "+faststart",
-    "-t",
-    videoDuration,
     outputPath,
   ];
 
   const { stdout, stderr } = await execFileAsync(ffmpegPath, args);
 
+  const finalDuration = await getMediaDuration(outputPath);
+
+  console.log("[merge] final duration check", {
+    videoDuration,
+    audioDuration,
+    finalDuration,
+  });
+
   return {
     stdout,
     stderr,
+    videoDuration,
+    audioDuration,
+    finalDuration,
   };
 }
 
@@ -198,7 +226,10 @@ app.post("/merge-memory-media", async (req, res) => {
 
     console.log("[merge] ffmpeg completed", {
       jobId,
-      stderr: mergeResult.stderr?.slice(0, 1000) ?? "",
+      videoDuration: mergeResult.videoDuration,
+      audioDuration: mergeResult.audioDuration,
+      finalDuration: mergeResult.finalDuration,
+      stderr: mergeResult.stderr?.slice(0, 1500) ?? "",
     });
 
     const mergedBuffer = await fs.readFile(outputPath);
